@@ -242,6 +242,7 @@ int main(const int argc, const char *const argv[]) {
     int rv;
     unsigned int i;
     int srv_fd;
+    int max_fd;
     client_sock_t *client;
     fd_set fd_set;
     double ms;
@@ -355,8 +356,11 @@ int main(const int argc, const char *const argv[]) {
     while(1) {
         FD_ZERO(&fd_set);
         FD_SET(srv_fd, &fd_set);
-        FD_SET(client->fd, &fd_set);
-        if ((rv = select(MAX(srv_fd, client->fd)+1, &fd_set, NULL, NULL, NULL)) == -1) {
+        if (client) {
+            FD_SET(client->fd, &fd_set);
+        }
+        max_fd = client ? MAX(client->fd, srv_fd) : srv_fd;
+        if ((rv = select(max_fd+1, &fd_set, NULL, NULL, NULL)) == -1) {
             LOG_ERRNO("select() failed");
             goto main_err2;
         } else if (signal_die) {
