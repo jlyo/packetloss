@@ -1,5 +1,9 @@
-CFLAGS=-Wall -Wextra -Werror -std=gnu99 -g
+CFLAGS = -Wall -Wextra -Werror -std=gnu99 -g
+TARGET = packetloss
 
-all: packetloss
+all: $(TARGET)
 
-.PHONY: all
+clean:
+	-rm -f $(TARGET)
+
+.PHONY: all clean

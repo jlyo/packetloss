@@ -1,16 +1,43 @@
+/*
+ * Copyright (C) 2005-2011 Cleversafe, Inc. All rights reserved.
+ *
+ * Contact Information:
+ * Cleversafe, Inc.
+ * 222 South Riverside Plaza
+ * Suite 1700
+ * Chicago, IL 60606, USA
+ *
+ * licensing@cleversafe.com
+ *
+ * END-OF-HEADER
+ * -----------------------
+ * @author: jyoung
+ *
+ * Date: Nov 18, 2011
+ * ---------------------
+ *
+ *  Sets up a server to listen for connections, and immediately closes them.
+ *  Concurrently runs a client that connects to the server, measuring the
+ *  time it takes to set up the connection
+ *
+ *  Usage: ./packetloss [SERVER_HOST] [CLIENT_HOST] [PORT]
+ */
+#include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netdb.h>
+#include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <stdbool.h>
-#include <fcntl.h>
 
-#include <sys/time.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 
+/* http://sourcefrog.net/weblog/software/languages/C/unused.html */
 #ifdef UNUSED
 #elif defined(__GNUC__)
 #    define UNUSED(x) UNUSED_ ## x __attribute__((unused))
@@ -20,7 +47,8 @@
 #    define UNUSED(x) x
 #endif
 
-#define MAX(x, y) ((x)> (y) ? (x) : (y))
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
 
 #define FREE(r) do {if(r){free(r); r = NULL;}}while(0)
 #define CLIENT_FREE(r) do{if(r){client_free(r); r = NULL;}}while(0)
@@ -57,7 +85,6 @@
         return -err; \
     while(0)
 
-
 typedef struct __client_sock_t {
     int fd;
     struct timeval start;
@@ -65,6 +92,17 @@ typedef struct __client_sock_t {
     struct timeval rtt;
     bool done;
 } client_sock_t;
+
+typedef struct __ping_stats_t {
+    const char *host;
+    const char *port;
+    unsigned long long errors;
+    unsigned long long sent;
+    unsigned long long recvd;
+    double min;
+    double max;
+    double cum_time;
+} ping_stats_t;
 
 static const struct addrinfo HINTS = {
     .ai_family = AF_UNSPEC,
@@ -82,6 +120,29 @@ static const char *const DEFAULT_LISTEN_HOST = "::";
 static const char *const DEFAULT_PORT = "8009";
 static const int BACKLOG = 1024;
 static const int YES = 1;
+
+static int print_ping_stats(ping_stats_t *r) {
+    int rv = 0;
+    char *lbracket = "";
+    char *rbracket = "";
+    if (strchr(r->host, ':') != NULL) {
+        lbracket = "[";
+        rbracket = "]";
+    }
+
+    if ((rv = printf("--- %s%s%s:%s ping statistics ---\n", lbracket, r->host,
+                    rbracket, r->port)) < 0) {
+        return rv;
+    } else if ((rv = printf("%lld responses, %lld ok, %3.2f%% failed\n", r->recvd,
+                    r->recvd - r->errors, (double)r->errors / (double)r->sent * 100.0)) < 0) {
+        return rv;
+    } else if ((rv = printf("round-trip min/avg/max = %.1f/%.1f/%.1f ms\n", r->min,
+                    r->cum_time / (double)r->recvd, r->max)) < 0) {
+        return rv;
+    }
+    return rv;
+}
+
 
 static int client_connect(client_sock_t **r, struct addrinfo *ai) {
     int rv = 0;
@@ -132,18 +193,30 @@ client_connect_err0:
 
 static int client_connected(client_sock_t *r) {
     int rv = 0;
+    struct sockaddr_storage remote_addr;
+    socklen_t remote_addr_len = sizeof(struct sockaddr_storage);
+    char ch;
+
     if (r == NULL) { return -EINVAL; };
 
     r->done = true;
     if (gettimeofday(&(r->finish), NULL) == -1) {
-        goto client_close_err0;
+        goto client_connected_err0;
+    /* http://cr.yp.to/docs/connect.html */
+    } else if (getpeername(r->fd, (struct sockaddr *)&remote_addr,
+                &remote_addr_len) == -1) {
+        rv = -errno;
+        if (rv == -ENOTCONN) {
+            assert(read(r->fd,&ch,1) == -1);
+            rv = -errno;
+        }
+        r->fd = 0;
     }
     r->rtt.tv_sec = r->finish.tv_sec - r->start.tv_sec;
     r->rtt.tv_usec = r->finish.tv_usec - r->start.tv_usec;
+    return rv;
 
-    return 0;
-
-client_close_err0:
+client_connected_err0:
     rv = rv ? rv : -errno;
     return rv;
 }
@@ -157,18 +230,25 @@ static int client_free(client_sock_t *r) {
     return 0;
 }
 
+ping_stats_t ping_stats;
+static void sig_handler(int UNUSED(status), siginfo_t *UNUSED(info), void *UNUSED(context)) {
+    print_ping_stats(&ping_stats);
+    _exit(ping_stats.errors == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+}
 
-int main (const int argc, const char *const argv[]) {
+int main(const int argc, const char *const argv[]) {
     struct addrinfo *listen_res;
     struct addrinfo *connect_res;
     struct addrinfo *res_p;
     int rv;
+    unsigned int i;
     int srv_fd;
     client_sock_t *client;
     fd_set fd_set;
     double ms;
-    double min = 0, max = 0, avg = 0;
     unsigned int seq_no = 0;
+
+    memset(&ping_stats, 0, sizeof(ping_stats_t));
 
     char ni_host[NI_MAXHOST];
     char ni_serv[NI_MAXSERV];
@@ -181,6 +261,24 @@ int main (const int argc, const char *const argv[]) {
     const char *const connect_host = argc > 2 ? argv[2] : DEFAULT_CONNECT_HOST;
     const char *const port = argc > 3 ? argv[3] : DEFAULT_PORT;
 
+    const int sigs[] = { SIGTERM, SIGHUP, SIGINT };
+    struct sigaction sigact;
+    sigset_t empty_sigset;
+    sigemptyset(&empty_sigset);
+    memset(&sigact, 0, sizeof(struct sigaction));
+    sigact.sa_flags = SA_SIGINFO;
+    sigact.sa_sigaction = &sig_handler;
+    sigact.sa_mask = empty_sigset;
+    for (i=0; i < sizeof(sigs)/sizeof(sigs[0]); ++i) {
+        if (sigaction(sigs[i], &sigact, NULL) == -1) {
+            LOG_ERRNO("sigaction() failed");
+            goto main_err0;
+        }
+    }
+
+    ping_stats.host = connect_host;
+    ping_stats.port = port;
+
     if ((rv = getaddrinfo(listen_host, port, NULL, &listen_res)) != 0) {
         LOG_GAIERR(rv, "getaddrinfo() failed");
         goto main_err0;
@@ -188,7 +286,7 @@ int main (const int argc, const char *const argv[]) {
 
     if ((rv = getaddrinfo(connect_host, port, NULL, &connect_res)) != 0) {
         LOG_GAIERR(rv, "getaddrinfo() failed");
-        goto main_err0;
+        goto main_err1;
     }
 
     /* server socket() bind() listen() */
@@ -250,7 +348,10 @@ int main (const int argc, const char *const argv[]) {
     client = NULL;
     if ((rv = client_connect(&client, connect_res)) != 0) {
         LOG_RETURN(rv, "client_connect() failed");
+    } else {
+        ping_stats.sent += 1;
     }
+
     while(1) {
         FD_ZERO(&fd_set);
         FD_SET(srv_fd, &fd_set);
@@ -298,13 +399,14 @@ int main (const int argc, const char *const argv[]) {
             if ((FD_ISSET(client->fd, &fd_set)) || client->done) {
                 if ((rv = client_connected(client)) != 0) {
                     LOG_RETURN(rv, "client_connected() failed");
+                    ping_stats.errors += 1;
+                } else {
+                    ping_stats.recvd += 1;
                 }
-                seq_no += 1;
                 ms = ((double)client->rtt.tv_sec * 1000.0) + ((double)client->rtt.tv_usec / 1000.0);
-                avg += ms;
-                min = min > ms ? ms : min;
-                max = max < ms ? ms : max;
-
+                ping_stats.cum_time += ms;
+                ping_stats.min = MIN(ping_stats.min, ms);
+                ping_stats.max = MIN(ping_stats.max, ms);
 
                 printf("response from %s:%s, seq=%d time=%.2f ms\n", connect_host, port, seq_no, ms);
                 CLIENT_FREE(client);
@@ -312,6 +414,8 @@ int main (const int argc, const char *const argv[]) {
 
                 if ((rv = client_connect(&client, connect_res)) != 0) {
                     LOG_RETURN(rv, "client_connect() failed");
+                } else {
+                    ping_stats.sent += 1;
                 }
             }
         }
@@ -321,13 +425,15 @@ int main (const int argc, const char *const argv[]) {
         LOG_ERRNO("close() failed");
     }
     FREEADDRINFO(connect_res);
-    return EXIT_SUCCESS;
+    print_ping_stats(&ping_stats);
+    return ping_stats.errors == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 
 main_err2:
     if (close(srv_fd) == -1) {
         LOG_ERRNO("close() failed");
     }
     FREEADDRINFO(connect_res);
+    print_ping_stats(&ping_stats);
     return EXIT_FAILURE;
 
 main_err1:
