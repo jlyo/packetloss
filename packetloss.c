@@ -230,10 +230,9 @@ static int client_free(client_sock_t *r) {
     return 0;
 }
 
-ping_stats_t ping_stats;
+bool signal_die = false;
 static void sig_handler(int UNUSED(status), siginfo_t *UNUSED(info), void *UNUSED(context)) {
-    print_ping_stats(&ping_stats);
-    _exit(ping_stats.errors == 0 ? EXIT_SUCCESS : EXIT_FAILURE);
+    signal_die = true;
 }
 
 int main(const int argc, const char *const argv[]) {
@@ -247,6 +246,7 @@ int main(const int argc, const char *const argv[]) {
     fd_set fd_set;
     double ms;
     unsigned int seq_no = 0;
+    ping_stats_t ping_stats;
 
     memset(&ping_stats, 0, sizeof(ping_stats_t));
 
@@ -359,6 +359,9 @@ int main(const int argc, const char *const argv[]) {
         if ((rv = select(MAX(srv_fd, client->fd)+1, &fd_set, NULL, NULL, NULL)) == -1) {
             LOG_ERRNO("select() failed");
             goto main_err2;
+        } else if (signal_die) {
+            CLIENT_FREE(client);
+            break;
         } else if (rv > 0) {
             if (FD_ISSET(srv_fd, &fd_set)) {
                 remote_addr_len = sizeof(remote_addr_storage);
