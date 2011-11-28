@@ -281,12 +281,12 @@ int main(const int argc, const char *const argv[]) {
     ping_stats.host = connect_host;
     ping_stats.port = port;
 
-    if ((rv = getaddrinfo(listen_host, port, NULL, &listen_res)) != 0) {
+    if ((rv = getaddrinfo(listen_host, port, &HINTS, &listen_res)) != 0) {
         LOG_GAIERR(rv, "getaddrinfo() failed");
         goto main_err0;
     }
 
-    if ((rv = getaddrinfo(connect_host, port, NULL, &connect_res)) != 0) {
+    if ((rv = getaddrinfo(connect_host, port, &HINTS, &connect_res)) != 0) {
         LOG_GAIERR(rv, "getaddrinfo() failed");
         goto main_err1;
     }
