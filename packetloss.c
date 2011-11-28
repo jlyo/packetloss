@@ -403,7 +403,7 @@ int main(const int argc, const char *const argv[]) {
                 }
                 LOG(" closed");
             }
-            if ((FD_ISSET(client->fd, &fd_set)) || client->done) {
+            if (client && ((FD_ISSET(client->fd, &fd_set)) || client->done)) {
                 if ((rv = client_connected(client)) != 0) {
                     LOG_RETURN(rv, "client_connected() failed");
                     ping_stats.errors += 1;
