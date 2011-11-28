@@ -36,6 +36,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/select.h>
 
 /* http://sourcefrog.net/weblog/software/languages/C/unused.html */
 #ifdef UNUSED
@@ -244,7 +245,7 @@ int main(const int argc, const char *const argv[]) {
     int srv_fd;
     int max_fd;
     client_sock_t *client;
-    fd_set fd_set;
+    fd_set fdset;
     double ms;
     unsigned int seq_no = 0;
     ping_stats_t ping_stats;
@@ -354,20 +355,20 @@ int main(const int argc, const char *const argv[]) {
     }
 
     while(1) {
-        FD_ZERO(&fd_set);
-        FD_SET(srv_fd, &fd_set);
+        FD_ZERO(&fdset);
+        FD_SET(srv_fd, &fdset);
         if (client) {
-            FD_SET(client->fd, &fd_set);
+            FD_SET(client->fd, &fdset);
         }
         max_fd = client ? MAX(client->fd, srv_fd) : srv_fd;
-        if ((rv = select(max_fd+1, &fd_set, NULL, NULL, NULL)) == -1) {
+        if ((rv = select(max_fd+1, &fdset, NULL, NULL, NULL)) == -1) {
             LOG_ERRNO("select() failed");
             goto main_err2;
         } else if (signal_die) {
             CLIENT_FREE(client);
             break;
         } else if (rv > 0) {
-            if (FD_ISSET(srv_fd, &fd_set)) {
+            if (FD_ISSET(srv_fd, &fdset)) {
                 remote_addr_len = sizeof(remote_addr_storage);
                 const int fd = accept(srv_fd, remote_addr, &remote_addr_len);
                 if (fd == -1) {
@@ -403,7 +404,7 @@ int main(const int argc, const char *const argv[]) {
                 }
                 LOG(" closed");
             }
-            if (client && ((FD_ISSET(client->fd, &fd_set)) || client->done)) {
+            if (client && ((FD_ISSET(client->fd, &fdset)) || client->done)) {
                 if ((rv = client_connected(client)) != 0) {
                     LOG_RETURN(rv, "client_connected() failed");
                     ping_stats.errors += 1;
